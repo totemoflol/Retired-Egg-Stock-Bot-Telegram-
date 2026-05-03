@@ -64,7 +64,7 @@ async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 def main():
-    TOKEN = "YOUR_BOT_TOKEN_HERE"  # <- paste your token here
+    TOKEN = "8685113145:AAHx0n8YuCg_2Ri7WQA5wI-FXEJs80MVFi0"  # <- paste your token here
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("restock", restock))
     app.add_handler(CommandHandler("sell", sell))
