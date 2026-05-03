@@ -1,124 +1,77 @@
+import json
 import os
-import sqlite3
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- DATABASE ---
-conn = sqlite3.connect("data.db", check_same_thread=False)
-cursor = conn.cursor()
+DATA_FILE = "inventory.json"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stock (
-    id INTEGER PRIMARY KEY,
-    value INTEGER
-)
-""")
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"inventory": 0, "pending": 0, "completed": 0}
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user TEXT,
-    action TEXT,
-    value INTEGER,
-    time TEXT
-)
-""")
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
 
-cursor.execute("SELECT * FROM stock WHERE id=1")
-if cursor.fetchone() is None:
-    cursor.execute("INSERT INTO stock (id, value) VALUES (1, 0)")
-    conn.commit()
-
-# --- FUNCTIONS ---
-def get_stock():
-    cursor.execute("SELECT value FROM stock WHERE id=1")
-    return cursor.fetchone()[0]
-
-def update_stock(change, user):
-    new_value = get_stock() + change
-
-    cursor.execute("UPDATE stock SET value=? WHERE id=1", (new_value,))
-    cursor.execute(
-        "INSERT INTO logs (user, action, value, time) VALUES (?, ?, ?, ?)",
-        (user, "+" if change > 0 else "-", abs(change),
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    )
-    conn.commit()
-
-def get_logs():
-    cursor.execute("SELECT user, action, value, time FROM logs ORDER BY id DESC LIMIT 10")
-    return cursor.fetchall()
-
-# --- START ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("➕ Add", callback_data="add"),
-            InlineKeyboardButton("➖ Remove", callback_data="minus"),
-        ],
-        [
-            InlineKeyboardButton("📜 Logs", callback_data="logs")
-        ]
-    ]
-    await update.message.reply_text(
-        f"Stock: {get_stock()}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# --- BUTTON HANDLER ---
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user.username or query.from_user.first_name
-    await query.answer()
-
-    if query.data in ["add", "minus"]:
-        context.user_data["action"] = query.data
-        await query.message.reply_text("Enter amount:")
-        return
-
-    elif query.data == "logs":
-        logs = get_logs()
-        text = "Last 10 logs:\n\n"
-        for log in logs:
-            text += f"{log[3]} | {log[0]} | {log[1]}{log[2]}\n"
-        await query.message.reply_text(text)
-        return
-
-# --- HANDLE NUMBER INPUT ---
-async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "action" not in context.user_data:
-        return
-
-    user = update.message.from_user.username or update.message.from_user.first_name
-
+async def restock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        amount = int(update.message.text)
-    except:
-        await update.message.reply_text("Please enter a valid number.")
-        return
+        amount = float(context.args[0])
+        data = load_data()
+        data["inventory"] += amount
+        save_data(data)
+        await update.message.reply_text(f"✅ Restocked {amount}. Inventory is now {data['inventory']}.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /restock <amount>")
 
-    if context.user_data["action"] == "add":
-        update_stock(amount, user)
-    else:
-        update_stock(-amount, user)
+async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(context.args[0])
+        data = load_data()
+        if amount > data["inventory"]:
+            await update.message.reply_text(f"❌ Not enough inventory. Current stock: {data['inventory']}.")
+            return
+        data["inventory"] -= amount
+        data["pending"] += amount
+        save_data(data)
+        await update.message.reply_text(f"🛒 Sold {amount}. Inventory: {data['inventory']} | Pending: {data['pending']}.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /sell <amount>")
 
-    context.user_data.pop("action")
+async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(context.args[0])
+        data = load_data()
+        if amount > data["pending"]:
+            await update.message.reply_text(f"❌ Not enough in pending. Pending: {data['pending']}.")
+            return
+        data["pending"] -= amount
+        data["completed"] += amount
+        save_data(data)
+        await update.message.reply_text(f"✔️ Marked {amount} as sold. Pending: {data['pending']} | Completed: {data['completed']}.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /sold <amount>")
 
-    await update.message.reply_text(f"Updated stock: {get_stock()}")
+async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    msg = (
+        f"📦 *Stock Report*\n"
+        f"Inventory: {data['inventory']}\n"
+        f"Pending:   {data['pending']}\n"
+        f"Completed: {data['completed']}"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- RUN ---
-if __name__ == "__main__":
-    TOKEN = os.getenv("BOT_TOKEN")
-
+def main():
+    TOKEN = "YOUR_BOT_TOKEN_HERE"  # <- paste your token here
     app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount))
-
+    app.add_handler(CommandHandler("restock", restock))
+    app.add_handler(CommandHandler("sell", sell))
+    app.add_handler(CommandHandler("sold", sold))
+    app.add_handler(CommandHandler("stock", stock))
     print("Bot running...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
